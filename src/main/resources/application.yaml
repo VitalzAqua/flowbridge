@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: flowbridge
+  datasource:
+    url: jdbc:postgresql://localhost:5433/flowbridge
+    username: flowbridge
+    password: flowbridge
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
