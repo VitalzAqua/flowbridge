@@ -10,6 +10,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
@@ -38,9 +40,11 @@ public class WorkflowRequestEntity {
     @Column(name = "idempotency_key", length = 150)
     private String idempotencyKey;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "original_payload", nullable = false, columnDefinition = "jsonb")
     private String originalPayload;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "mapped_payload", columnDefinition = "jsonb")
     private String mappedPayload;
 
@@ -56,7 +60,7 @@ public class WorkflowRequestEntity {
     @Column(name = "updated_at", nullable = false, insertable = false, updatable = false)
     private LocalDateTime updatedAt;
 
-    protected WorkflowRequestEntity() {
+    public WorkflowRequestEntity() {
     }
 
     public Long getId() {
