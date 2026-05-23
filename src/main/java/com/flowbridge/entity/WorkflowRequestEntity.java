@@ -10,11 +10,14 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.Getter;
+import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
+@Getter
 @Entity
 @Table(name = "workflow_requests")
 public class WorkflowRequestEntity {
@@ -23,34 +26,43 @@ public class WorkflowRequestEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Setter
     @Enumerated(EnumType.STRING)
     @Column(name = "workflow_type", nullable = false, length = 100)
     private WorkflowType workflowType;
 
+    @Setter
     @Column(name = "source_system", nullable = false, length = 100)
     private String sourceSystem;
 
+    @Setter
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 50)
     private WorkflowStatus status;
 
+    @Setter
     @Column(name = "correlation_id", nullable = false, unique = true, length = 100)
     private String correlationId;
 
+    @Setter
     @Column(name = "idempotency_key", length = 150)
     private String idempotencyKey;
 
+    @Setter
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "original_payload", nullable = false, columnDefinition = "jsonb")
     private String originalPayload;
 
+    @Setter
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "mapped_payload", columnDefinition = "jsonb")
     private String mappedPayload;
 
+    @Setter
     @Column(name = "failure_reason")
     private String failureReason;
 
+    @Setter
     @Column(name = "retry_count", nullable = false)
     private Integer retryCount = 0;
 
@@ -63,87 +75,4 @@ public class WorkflowRequestEntity {
     public WorkflowRequestEntity() {
     }
 
-    public Long getId() {
-        return id;
-    }
-
-    public WorkflowType getWorkflowType() {
-        return workflowType;
-    }
-
-    public void setWorkflowType(WorkflowType workflowType) {
-        this.workflowType = workflowType;
-    }
-
-    public String getSourceSystem() {
-        return sourceSystem;
-    }
-
-    public void setSourceSystem(String sourceSystem) {
-        this.sourceSystem = sourceSystem;
-    }
-
-    public WorkflowStatus getStatus() {
-        return status;
-    }
-
-    public void setStatus(WorkflowStatus status) {
-        this.status = status;
-    }
-
-    public String getCorrelationId() {
-        return correlationId;
-    }
-
-    public void setCorrelationId(String correlationId) {
-        this.correlationId = correlationId;
-    }
-
-    public String getIdempotencyKey() {
-        return idempotencyKey;
-    }
-
-    public void setIdempotencyKey(String idempotencyKey) {
-        this.idempotencyKey = idempotencyKey;
-    }
-
-    public String getOriginalPayload() {
-        return originalPayload;
-    }
-
-    public void setOriginalPayload(String originalPayload) {
-        this.originalPayload = originalPayload;
-    }
-
-    public String getMappedPayload() {
-        return mappedPayload;
-    }
-
-    public void setMappedPayload(String mappedPayload) {
-        this.mappedPayload = mappedPayload;
-    }
-
-    public String getFailureReason() {
-        return failureReason;
-    }
-
-    public void setFailureReason(String failureReason) {
-        this.failureReason = failureReason;
-    }
-
-    public Integer getRetryCount() {
-        return retryCount;
-    }
-
-    public void setRetryCount(Integer retryCount) {
-        this.retryCount = retryCount;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
 }
