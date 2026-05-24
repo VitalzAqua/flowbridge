@@ -3,13 +3,15 @@ package com.flowbridge.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowbridge.dto.AccountOpeningRequest;
+import com.flowbridge.dto.AuditLogResponse;
+import com.flowbridge.dto.CoreBankingPayload;
+import com.flowbridge.dto.WorkflowDetailResponse;
 import com.flowbridge.dto.WorkflowResponse;
-import com.flowbridge.entity.AuditLogEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
-import com.flowbridge.repository.AuditLogRepository;
+import com.flowbridge.exception.WorkflowNotFoundException;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,19 +28,22 @@ public class WorkflowService {
     private static final int MINIMUM_ACCOUNT_OPENING_AGE = 18;
 
     private final WorkflowRequestRepository workflowRequestRepository;
-    private final AuditLogRepository auditLogRepository;
+    private final AuditLogService auditLogService;
     private final CorrelationIdService correlationIdService;
+    private final MappingService mappingService;
     private final ObjectMapper objectMapper;
 
     public WorkflowService(
             WorkflowRequestRepository workflowRequestRepository,
-            AuditLogRepository auditLogRepository,
+            AuditLogService auditLogService,
             CorrelationIdService correlationIdService,
+            MappingService mappingService,
             ObjectMapper objectMapper
     ) {
         this.workflowRequestRepository = workflowRequestRepository;
-        this.auditLogRepository = auditLogRepository;
+        this.auditLogService = auditLogService;
         this.correlationIdService = correlationIdService;
+        this.mappingService = mappingService;
         this.objectMapper = objectMapper;
     }
 
@@ -62,12 +67,18 @@ public class WorkflowService {
             WorkflowRequestEntity validatedWorkflow = workflowRequestRepository.save(savedWorkflow);
             saveValidationPassedAuditLog(validatedWorkflow);
 
+            CoreBankingPayload coreBankingPayload = mappingService.mapAccountOpeningRequest(request);
+            validatedWorkflow.setMappedPayload(toJson(coreBankingPayload));
+            validatedWorkflow.setStatus(WorkflowStatus.MAPPED);
+            WorkflowRequestEntity mappedWorkflow = workflowRequestRepository.save(validatedWorkflow);
+            savePayloadMappedAuditLog(mappedWorkflow, request, coreBankingPayload);
+
             return new WorkflowResponse(
-                    validatedWorkflow.getId(),
-                    validatedWorkflow.getWorkflowType(),
-                    validatedWorkflow.getStatus(),
-                    validatedWorkflow.getCorrelationId(),
-                    "Account opening workflow validated successfully"
+                    mappedWorkflow.getId(),
+                    mappedWorkflow.getWorkflowType(),
+                    mappedWorkflow.getStatus(),
+                    mappedWorkflow.getCorrelationId(),
+                    "Account opening workflow received and mapped successfully"
             );
         }
 
@@ -86,45 +97,70 @@ public class WorkflowService {
         );
     }
 
+    public WorkflowDetailResponse getWorkflow(Long workflowId) {
+        WorkflowRequestEntity workflowRequest = workflowRequestRepository.findById(workflowId)
+                .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
+
+        return toWorkflowDetailResponse(workflowRequest);
+    }
+
+    public List<AuditLogResponse> getAuditLogs(Long workflowId) {
+        if (!workflowRequestRepository.existsById(workflowId)) {
+            throw new WorkflowNotFoundException(workflowId);
+        }
+
+        return auditLogService.getAuditLogsForWorkflow(workflowId);
+    }
+
     private void saveRequestReceivedAuditLog(WorkflowRequestEntity workflowRequest) {
-        AuditLogEntity auditLog = new AuditLogEntity();
-        auditLog.setWorkflowRequest(workflowRequest);
-        auditLog.setCorrelationId(workflowRequest.getCorrelationId());
-        auditLog.setEventType(AuditEventType.REQUEST_RECEIVED);
-        auditLog.setMessage("Account-opening request was received");
-        auditLog.setMetadata("""
+        auditLogService.writeAuditLog(
+                workflowRequest,
+                AuditEventType.REQUEST_RECEIVED,
+                "Account-opening request was received",
+                """
                 {
                   "sourceSystem": "DIGITAL_CHANNEL"
                 }
-                """);
-
-        auditLogRepository.save(auditLog);
+                """
+        );
     }
 
     private void saveValidationPassedAuditLog(WorkflowRequestEntity workflowRequest) {
-        AuditLogEntity auditLog = new AuditLogEntity();
-        auditLog.setWorkflowRequest(workflowRequest);
-        auditLog.setCorrelationId(workflowRequest.getCorrelationId());
-        auditLog.setEventType(AuditEventType.VALIDATION_PASSED);
-        auditLog.setMessage("Account-opening request passed validation");
-        auditLog.setMetadata("""
+        auditLogService.writeAuditLog(
+                workflowRequest,
+                AuditEventType.VALIDATION_PASSED,
+                "Account-opening request passed validation",
+                """
                 {
                   "minimumAge": 18
                 }
-                """);
+                """
+        );
+    }
 
-        auditLogRepository.save(auditLog);
+    private void savePayloadMappedAuditLog(
+            WorkflowRequestEntity workflowRequest,
+            AccountOpeningRequest request,
+            CoreBankingPayload coreBankingPayload
+    ) {
+        auditLogService.writeAuditLog(
+                workflowRequest,
+                AuditEventType.PAYLOAD_MAPPED,
+                "Mapped account-opening request to core banking payload",
+                toJson(new PayloadMappedMetadata(
+                        request.getAccountType().name(),
+                        coreBankingPayload.getProductCode()
+                ))
+        );
     }
 
     private void saveValidationFailedAuditLog(WorkflowRequestEntity workflowRequest, String failureReason) {
-        AuditLogEntity auditLog = new AuditLogEntity();
-        auditLog.setWorkflowRequest(workflowRequest);
-        auditLog.setCorrelationId(workflowRequest.getCorrelationId());
-        auditLog.setEventType(AuditEventType.VALIDATION_FAILED);
-        auditLog.setMessage("Account-opening request failed validation");
-        auditLog.setMetadata(toJson(new ValidationFailureMetadata(failureReason)));
-
-        auditLogRepository.save(auditLog);
+        auditLogService.writeAuditLog(
+                workflowRequest,
+                AuditEventType.VALIDATION_FAILED,
+                "Account-opening request failed validation",
+                toJson(new ValidationFailureMetadata(failureReason))
+        );
     }
 
     private List<String> validateAccountOpeningRequest(AccountOpeningRequest request) {
@@ -146,11 +182,36 @@ public class WorkflowService {
         return validationErrors;
     }
 
+    private WorkflowDetailResponse toWorkflowDetailResponse(WorkflowRequestEntity workflowRequest) {
+        return new WorkflowDetailResponse(
+                workflowRequest.getId(),
+                workflowRequest.getWorkflowType(),
+                workflowRequest.getSourceSystem(),
+                workflowRequest.getStatus(),
+                workflowRequest.getCorrelationId(),
+                workflowRequest.getIdempotencyKey(),
+                workflowRequest.getOriginalPayload(),
+                workflowRequest.getMappedPayload(),
+                workflowRequest.getFailureReason(),
+                workflowRequest.getRetryCount(),
+                workflowRequest.getCreatedAt(),
+                workflowRequest.getUpdatedAt()
+        );
+    }
+
     private String toJson(AccountOpeningRequest request) {
         try {
             return objectMapper.writeValueAsString(request);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Failed to serialize account-opening request", exception);
+        }
+    }
+
+    private String toJson(CoreBankingPayload payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Failed to serialize core banking payload", exception);
         }
     }
 
@@ -162,6 +223,17 @@ public class WorkflowService {
         }
     }
 
+    private String toJson(PayloadMappedMetadata metadata) {
+        try {
+            return objectMapper.writeValueAsString(metadata);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Failed to serialize payload mapped metadata", exception);
+        }
+    }
+
     private record ValidationFailureMetadata(String failureReason) {
+    }
+
+    private record PayloadMappedMetadata(String sourceAccountType, String targetProductCode) {
     }
 }
