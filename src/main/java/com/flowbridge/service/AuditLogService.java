@@ -5,12 +5,16 @@ import com.flowbridge.entity.AuditLogEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
 import com.flowbridge.repository.AuditLogRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 @Service
 public class AuditLogService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuditLogService.class);
 
     private final AuditLogRepository auditLogRepository;
 
@@ -32,6 +36,12 @@ public class AuditLogService {
         auditLog.setMetadata(metadata);
 
         auditLogRepository.save(auditLog);
+        log.info(
+                "Audit event {} written for workflow {} with correlationId {}",
+                eventType,
+                workflowRequest.getId(),
+                workflowRequest.getCorrelationId()
+        );
     }
 
     public List<AuditLogResponse> getAuditLogsForWorkflow(Long workflowId) {
