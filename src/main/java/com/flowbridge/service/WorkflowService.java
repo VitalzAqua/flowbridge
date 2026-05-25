@@ -13,6 +13,8 @@ import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
 import com.flowbridge.exception.WorkflowNotFoundException;
 import com.flowbridge.repository.WorkflowRequestRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +26,8 @@ import java.util.List;
 @Service
 public class WorkflowService {
 
+    private static final Logger log = LoggerFactory.getLogger(WorkflowService.class);
+
     private static final String DIGITAL_CHANNEL_SOURCE_SYSTEM = "DIGITAL_CHANNEL";
     private static final int MINIMUM_ACCOUNT_OPENING_AGE = 18;
 
@@ -31,6 +35,7 @@ public class WorkflowService {
     private final AuditLogService auditLogService;
     private final CorrelationIdService correlationIdService;
     private final MappingService mappingService;
+    private final WorkflowStatusTransitionValidator statusTransitionValidator;
     private final ObjectMapper objectMapper;
 
     public WorkflowService(
@@ -38,18 +43,26 @@ public class WorkflowService {
             AuditLogService auditLogService,
             CorrelationIdService correlationIdService,
             MappingService mappingService,
+            WorkflowStatusTransitionValidator statusTransitionValidator,
             ObjectMapper objectMapper
     ) {
         this.workflowRequestRepository = workflowRequestRepository;
         this.auditLogService = auditLogService;
         this.correlationIdService = correlationIdService;
         this.mappingService = mappingService;
+        this.statusTransitionValidator = statusTransitionValidator;
         this.objectMapper = objectMapper;
     }
 
     @Transactional
     public WorkflowResponse createAccountOpeningWorkflow(AccountOpeningRequest request) {
         String correlationId = correlationIdService.generateCorrelationId();
+        log.info(
+                "Starting account-opening workflow for clientId {} accountType {} correlationId {}",
+                request.getClientId(),
+                request.getAccountType(),
+                correlationId
+        );
 
         WorkflowRequestEntity workflowRequest = new WorkflowRequestEntity();
         workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
@@ -59,17 +72,23 @@ public class WorkflowService {
         workflowRequest.setOriginalPayload(toJson(request));
 
         WorkflowRequestEntity savedWorkflow = workflowRequestRepository.save(workflowRequest);
+        log.info(
+                "Workflow {} with correlationId {} saved with status {}",
+                savedWorkflow.getId(),
+                savedWorkflow.getCorrelationId(),
+                savedWorkflow.getStatus()
+        );
         saveRequestReceivedAuditLog(savedWorkflow);
 
         List<String> validationErrors = validateAccountOpeningRequest(request);
         if (validationErrors.isEmpty()) {
-            savedWorkflow.setStatus(WorkflowStatus.VALIDATED);
+            transitionWorkflow(savedWorkflow, WorkflowStatus.VALIDATED);
             WorkflowRequestEntity validatedWorkflow = workflowRequestRepository.save(savedWorkflow);
             saveValidationPassedAuditLog(validatedWorkflow);
 
             CoreBankingPayload coreBankingPayload = mappingService.mapAccountOpeningRequest(request);
             validatedWorkflow.setMappedPayload(toJson(coreBankingPayload));
-            validatedWorkflow.setStatus(WorkflowStatus.MAPPED);
+            transitionWorkflow(validatedWorkflow, WorkflowStatus.MAPPED);
             WorkflowRequestEntity mappedWorkflow = workflowRequestRepository.save(validatedWorkflow);
             savePayloadMappedAuditLog(mappedWorkflow, request, coreBankingPayload);
 
@@ -83,7 +102,13 @@ public class WorkflowService {
         }
 
         String failureReason = String.join("; ", validationErrors);
-        savedWorkflow.setStatus(WorkflowStatus.FAILED);
+        log.warn(
+                "Workflow {} with correlationId {} failed validation: {}",
+                savedWorkflow.getId(),
+                savedWorkflow.getCorrelationId(),
+                failureReason
+        );
+        transitionWorkflow(savedWorkflow, WorkflowStatus.FAILED);
         savedWorkflow.setFailureReason(failureReason);
         WorkflowRequestEntity failedWorkflow = workflowRequestRepository.save(savedWorkflow);
         saveValidationFailedAuditLog(failedWorkflow, failureReason);
@@ -98,6 +123,7 @@ public class WorkflowService {
     }
 
     public WorkflowDetailResponse getWorkflow(Long workflowId) {
+        log.info("Loading workflow {}", workflowId);
         WorkflowRequestEntity workflowRequest = workflowRequestRepository.findById(workflowId)
                 .orElseThrow(() -> new WorkflowNotFoundException(workflowId));
 
@@ -105,6 +131,7 @@ public class WorkflowService {
     }
 
     public List<AuditLogResponse> getAuditLogs(Long workflowId) {
+        log.info("Loading audit logs for workflow {}", workflowId);
         if (!workflowRequestRepository.existsById(workflowId)) {
             throw new WorkflowNotFoundException(workflowId);
         }
@@ -180,6 +207,19 @@ public class WorkflowService {
         }
 
         return validationErrors;
+    }
+
+    private void transitionWorkflow(WorkflowRequestEntity workflowRequest, WorkflowStatus nextStatus) {
+        WorkflowStatus currentStatus = workflowRequest.getStatus();
+        statusTransitionValidator.validateTransition(workflowRequest.getStatus(), nextStatus);
+        log.info(
+                "Workflow {} with correlationId {} transitioned from {} to {}",
+                workflowRequest.getId(),
+                workflowRequest.getCorrelationId(),
+                currentStatus,
+                nextStatus
+        );
+        workflowRequest.setStatus(nextStatus);
     }
 
     private WorkflowDetailResponse toWorkflowDetailResponse(WorkflowRequestEntity workflowRequest) {

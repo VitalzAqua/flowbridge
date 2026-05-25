@@ -35,6 +35,7 @@ class WorkflowServiceTest {
     private final AuditLogService auditLogService = new AuditLogService(auditLogRepository);
     private final CorrelationIdService correlationIdService = mock(CorrelationIdService.class);
     private final MappingService mappingService = new MappingService();
+    private final WorkflowStatusTransitionValidator statusTransitionValidator = new WorkflowStatusTransitionValidator();
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private final WorkflowService workflowService = new WorkflowService(
@@ -42,6 +43,7 @@ class WorkflowServiceTest {
             auditLogService,
             correlationIdService,
             mappingService,
+            statusTransitionValidator,
             objectMapper
     );
 

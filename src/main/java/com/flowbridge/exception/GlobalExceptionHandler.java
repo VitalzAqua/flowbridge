@@ -12,6 +12,22 @@ import java.time.LocalDateTime;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(InvalidWorkflowStateException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidWorkflowState(
+            InvalidWorkflowStateException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                "Invalid workflow state",
+                exception.getMessage(),
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
     @ExceptionHandler(WorkflowNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleWorkflowNotFound(
             WorkflowNotFoundException exception,
