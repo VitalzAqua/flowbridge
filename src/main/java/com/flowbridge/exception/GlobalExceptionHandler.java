@@ -12,6 +12,22 @@ import java.time.LocalDateTime;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(KafkaEventPublishException.class)
+    public ResponseEntity<ErrorResponse> handleKafkaEventPublishFailure(
+            KafkaEventPublishException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                "Kafka event publish failed",
+                exception.getMessage(),
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
+    }
+
     @ExceptionHandler(InvalidWorkflowStateException.class)
     public ResponseEntity<ErrorResponse> handleInvalidWorkflowState(
             InvalidWorkflowStateException exception,

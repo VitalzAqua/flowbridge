@@ -11,12 +11,15 @@ import com.flowbridge.enums.AccountType;
 import com.flowbridge.enums.AuditEventType;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
+import com.flowbridge.kafka.WorkflowEvent;
+import com.flowbridge.kafka.WorkflowEventProducer;
 import com.flowbridge.repository.AuditLogRepository;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -24,6 +27,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +40,7 @@ class WorkflowServiceTest {
     private final CorrelationIdService correlationIdService = mock(CorrelationIdService.class);
     private final MappingService mappingService = new MappingService();
     private final WorkflowStatusTransitionValidator statusTransitionValidator = new WorkflowStatusTransitionValidator();
+    private final WorkflowEventProducer workflowEventProducer = mock(WorkflowEventProducer.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     private final WorkflowService workflowService = new WorkflowService(
@@ -44,6 +49,7 @@ class WorkflowServiceTest {
             correlationIdService,
             mappingService,
             statusTransitionValidator,
+            workflowEventProducer,
             objectMapper
     );
 
@@ -59,6 +65,14 @@ class WorkflowServiceTest {
         when(correlationIdService.generateCorrelationId()).thenReturn("corr-123");
         when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        when(workflowEventProducer.publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class)))
+                .thenReturn(new WorkflowEvent(
+                        1L,
+                        WorkflowType.ACCOUNT_OPENING,
+                        WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
+                        "corr-123",
+                        Instant.parse("2026-05-26T10:00:00Z")
+                ));
 
         WorkflowResponse response = workflowService.createAccountOpeningWorkflow(request);
 
@@ -80,7 +94,7 @@ class WorkflowServiceTest {
         assertThat(mappedWorkflow.getFailureReason()).isNull();
 
         ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
-        verify(auditLogRepository, times(3)).save(auditLogCaptor.capture());
+        verify(auditLogRepository, times(4)).save(auditLogCaptor.capture());
         List<AuditLogEntity> savedAuditLogs = auditLogCaptor.getAllValues();
 
         assertThat(savedAuditLogs.getFirst().getWorkflowRequest()).isSameAs(mappedWorkflow);
@@ -92,12 +106,19 @@ class WorkflowServiceTest {
         assertThat(savedAuditLogs.get(1).getCorrelationId()).isEqualTo("corr-123");
         assertThat(savedAuditLogs.get(1).getEventType()).isEqualTo(AuditEventType.VALIDATION_PASSED);
         assertThat(savedAuditLogs.get(1).getMessage()).isEqualTo("Account-opening request passed validation");
+        assertThat(savedAuditLogs.get(2).getWorkflowRequest()).isSameAs(mappedWorkflow);
+        assertThat(savedAuditLogs.get(2).getCorrelationId()).isEqualTo("corr-123");
+        assertThat(savedAuditLogs.get(2).getEventType()).isEqualTo(AuditEventType.PAYLOAD_MAPPED);
+        assertThat(savedAuditLogs.get(2).getMessage()).isEqualTo("Mapped account-opening request to core banking payload");
+        assertThat(savedAuditLogs.get(2).getMetadata()).contains("SAVINGS");
+        assertThat(savedAuditLogs.get(2).getMetadata()).contains("SAV001");
         assertThat(savedAuditLogs.getLast().getWorkflowRequest()).isSameAs(mappedWorkflow);
         assertThat(savedAuditLogs.getLast().getCorrelationId()).isEqualTo("corr-123");
-        assertThat(savedAuditLogs.getLast().getEventType()).isEqualTo(AuditEventType.PAYLOAD_MAPPED);
-        assertThat(savedAuditLogs.getLast().getMessage()).isEqualTo("Mapped account-opening request to core banking payload");
-        assertThat(savedAuditLogs.getLast().getMetadata()).contains("SAVINGS");
-        assertThat(savedAuditLogs.getLast().getMetadata()).contains("SAV001");
+        assertThat(savedAuditLogs.getLast().getEventType()).isEqualTo(AuditEventType.KAFKA_EVENT_PUBLISHED);
+        assertThat(savedAuditLogs.getLast().getMessage()).isEqualTo("Published account-opening mapped event to Kafka");
+        assertThat(savedAuditLogs.getLast().getMetadata()).contains("ACCOUNT_OPENING_MAPPED");
+
+        verify(workflowEventProducer).publishAccountOpeningMappedEvent(mappedWorkflow);
 
         assertThat(response.getWorkflowType()).isEqualTo(WorkflowType.ACCOUNT_OPENING);
         assertThat(response.getStatus()).isEqualTo(WorkflowStatus.MAPPED);
@@ -140,6 +161,7 @@ class WorkflowServiceTest {
         assertThat(response.getStatus()).isEqualTo(WorkflowStatus.FAILED);
         assertThat(response.getCorrelationId()).isEqualTo("corr-456");
         assertThat(response.getMessage()).isEqualTo("Account opening workflow failed validation");
+        verify(workflowEventProducer, never()).publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class));
     }
 
     @Test

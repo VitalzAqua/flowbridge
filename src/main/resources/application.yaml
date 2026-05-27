@@ -1,6 +1,9 @@
 spring:
   application:
     name: flowbridge
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
   datasource:
     url: jdbc:postgresql://localhost:5433/flowbridge
     username: flowbridge
@@ -15,3 +18,14 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+
+flowbridge:
+  kafka:
+    workflow-events-topic: flowbridge.workflow.events
