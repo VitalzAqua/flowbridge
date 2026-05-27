@@ -58,6 +58,36 @@ class WorkflowFoundationRepositoryTest {
         assertThat(savedWorkflow.get().getRetryCount()).isZero();
         assertThat(savedWorkflow.get().getOriginalPayload()).contains("Alice Chen");
         assertThat(savedWorkflow.get().getCreatedAt()).isNotNull();
+        assertThat(savedWorkflow.get().getUpdatedAt()).isNotNull();
+    }
+
+    @Test
+    void updatesWorkflowUpdatedAtWhenWorkflowChanges() {
+        WorkflowRequestEntity workflowRequest = new WorkflowRequestEntity();
+        workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
+        workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
+        workflowRequest.setStatus(WorkflowStatus.RECEIVED);
+        workflowRequest.setCorrelationId("test-correlation-003");
+        workflowRequest.setOriginalPayload("""
+                {
+                  "clientId": "C789",
+                  "fullName": "Mina Patel"
+                }
+                """);
+
+        WorkflowRequestEntity savedWorkflow = workflowRequestRepository.saveAndFlush(workflowRequest);
+        entityManager.clear();
+
+        WorkflowRequestEntity workflowToUpdate = workflowRequestRepository.findById(savedWorkflow.getId()).orElseThrow();
+        assertThat(workflowToUpdate.getCreatedAt()).isEqualTo(workflowToUpdate.getUpdatedAt());
+
+        workflowToUpdate.setStatus(WorkflowStatus.VALIDATED);
+        workflowRequestRepository.saveAndFlush(workflowToUpdate);
+        entityManager.clear();
+
+        WorkflowRequestEntity updatedWorkflow = workflowRequestRepository.findById(savedWorkflow.getId()).orElseThrow();
+
+        assertThat(updatedWorkflow.getUpdatedAt()).isAfter(updatedWorkflow.getCreatedAt());
     }
 
     @Test
