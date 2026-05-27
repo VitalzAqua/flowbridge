@@ -1,5 +1,7 @@
 package com.flowbridge.kafka;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.flowbridge.enums.WorkflowType;
 import lombok.Getter;
 
@@ -14,12 +16,13 @@ public class WorkflowEvent {
     private final String correlationId;
     private final Instant timestamp;
 
+    @JsonCreator
     public WorkflowEvent(
-            Long workflowId,
-            WorkflowType workflowType,
-            String eventType,
-            String correlationId,
-            Instant timestamp
+            @JsonProperty("workflowId") Long workflowId,
+            @JsonProperty("workflowType") WorkflowType workflowType,
+            @JsonProperty("eventType") String eventType,
+            @JsonProperty("correlationId") String correlationId,
+            @JsonProperty("timestamp") Instant timestamp
     ) {
         this.workflowId = workflowId;
         this.workflowType = workflowType;
