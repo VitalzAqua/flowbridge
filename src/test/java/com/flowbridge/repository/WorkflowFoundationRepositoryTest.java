@@ -2,9 +2,11 @@ package com.flowbridge.repository;
 
 import com.flowbridge.TestcontainersConfiguration;
 import com.flowbridge.entity.AuditLogEntity;
+import com.flowbridge.entity.ExternalSystemResponseEntity;
 import com.flowbridge.entity.RetryAttemptEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
+import com.flowbridge.enums.ExternalSystemStatus;
 import com.flowbridge.enums.RetryAttemptStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
@@ -30,6 +32,9 @@ class WorkflowFoundationRepositoryTest {
 
     @Autowired
     private AuditLogRepository auditLogRepository;
+
+    @Autowired
+    private ExternalSystemResponseRepository externalSystemResponseRepository;
 
     @Autowired
     private RetryAttemptRepository retryAttemptRepository;
@@ -165,5 +170,41 @@ class WorkflowFoundationRepositoryTest {
         assertThat(retryAttempts.getFirst().getStatus()).isEqualTo(RetryAttemptStatus.REQUESTED);
         assertThat(retryAttempts.getFirst().getFailureReason()).contains("Core banking rejected");
         assertThat(retryAttempts.getFirst().getCreatedAt()).isNotNull();
+    }
+
+    @Test
+    void findsExistingSuccessfulExternalSystemResponseForWorkflow() {
+        WorkflowRequestEntity workflowRequest = new WorkflowRequestEntity();
+        workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
+        workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
+        workflowRequest.setStatus(WorkflowStatus.COMPLETED);
+        workflowRequest.setCorrelationId("test-correlation-005");
+        workflowRequest.setOriginalPayload("""
+                {
+                  "clientId": "C123"
+                }
+                """);
+        WorkflowRequestEntity savedWorkflow = workflowRequestRepository.saveAndFlush(workflowRequest);
+
+        ExternalSystemResponseEntity externalSystemResponse = new ExternalSystemResponseEntity();
+        externalSystemResponse.setWorkflowRequest(savedWorkflow);
+        externalSystemResponse.setExternalReferenceId("CORE-123");
+        externalSystemResponse.setStatus(ExternalSystemStatus.SUCCESS);
+        externalSystemResponse.setMessage("Account created successfully");
+
+        externalSystemResponseRepository.saveAndFlush(externalSystemResponse);
+        entityManager.clear();
+
+        boolean successResponseExists = externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
+                savedWorkflow.getId(),
+                ExternalSystemStatus.SUCCESS
+        );
+        boolean failedResponseExists = externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
+                savedWorkflow.getId(),
+                ExternalSystemStatus.FAILED
+        );
+
+        assertThat(successResponseExists).isTrue();
+        assertThat(failedResponseExists).isFalse();
     }
 }

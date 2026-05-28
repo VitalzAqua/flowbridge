@@ -173,6 +173,34 @@ class WorkflowProcessingServiceTest {
     }
 
     @Test
+    void skipsDuplicateEventWhenSuccessfulExternalResponseAlreadyExists() {
+        WorkflowRequestEntity workflowRequest = mappedWorkflow("""
+                {
+                  "customer_id": "C123",
+                  "product_code": "SAV001"
+                }
+                """);
+
+        when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
+        when(externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
+                10L,
+                ExternalSystemStatus.SUCCESS
+        )).thenReturn(true);
+
+        workflowProcessingService.processWorkflowEvent(accountOpeningMappedEvent());
+
+        verify(workflowRequestRepository, never()).save(any(WorkflowRequestEntity.class));
+        verify(mockCoreBankingService, never()).openAccount(any());
+        verify(externalSystemResponseRepository, never()).save(any(ExternalSystemResponseEntity.class));
+
+        ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
+        verify(auditLogRepository).save(auditLogCaptor.capture());
+        assertThat(auditLogCaptor.getValue().getEventType()).isEqualTo(AuditEventType.DUPLICATE_EVENT_SKIPPED);
+        assertThat(auditLogCaptor.getValue().getMessage())
+                .isEqualTo("Skipped duplicate Kafka event because workflow was already processed successfully");
+    }
+
+    @Test
     void ignoresUnsupportedEventTypes() {
         WorkflowEvent unsupportedEvent = new WorkflowEvent(
                 10L,
