@@ -10,8 +10,6 @@ import com.flowbridge.enums.RetryAttemptStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.exception.NonRetryableWorkflowException;
 import com.flowbridge.exception.WorkflowNotFoundException;
-import com.flowbridge.kafka.WorkflowEvent;
-import com.flowbridge.kafka.WorkflowEventProducer;
 import com.flowbridge.repository.RetryAttemptRepository;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.slf4j.Logger;
@@ -29,7 +27,7 @@ public class RetryService {
     private final RetryAttemptRepository retryAttemptRepository;
     private final AuditLogService auditLogService;
     private final WorkflowStatusTransitionValidator statusTransitionValidator;
-    private final WorkflowEventProducer workflowEventProducer;
+    private final OutboxEventService outboxEventService;
     private final ObjectMapper objectMapper;
 
     public RetryService(
@@ -37,14 +35,14 @@ public class RetryService {
             RetryAttemptRepository retryAttemptRepository,
             AuditLogService auditLogService,
             WorkflowStatusTransitionValidator statusTransitionValidator,
-            WorkflowEventProducer workflowEventProducer,
+            OutboxEventService outboxEventService,
             ObjectMapper objectMapper
     ) {
         this.workflowRequestRepository = workflowRequestRepository;
         this.retryAttemptRepository = retryAttemptRepository;
         this.auditLogService = auditLogService;
         this.statusTransitionValidator = statusTransitionValidator;
-        this.workflowEventProducer = workflowEventProducer;
+        this.outboxEventService = outboxEventService;
         this.objectMapper = objectMapper;
     }
 
@@ -82,10 +80,9 @@ public class RetryService {
         WorkflowRequestEntity retryingWorkflow = workflowRequestRepository.save(workflowRequest);
 
         saveRetryRequestedAuditLog(retryingWorkflow, nextAttemptNumber, previousFailureReason);
-        WorkflowEvent workflowEvent = workflowEventProducer.publishAccountOpeningMappedEvent(retryingWorkflow);
-        retryAttempt.setStatus(RetryAttemptStatus.EVENT_PUBLISHED);
+        outboxEventService.queueAccountOpeningMappedEvent(retryingWorkflow);
+        retryAttempt.setStatus(RetryAttemptStatus.EVENT_QUEUED);
         retryAttemptRepository.save(retryAttempt);
-        saveKafkaEventPublishedAuditLog(retryingWorkflow, workflowEvent, nextAttemptNumber);
 
         return new WorkflowResponse(
                 retryingWorkflow.getId(),
@@ -137,23 +134,6 @@ public class RetryService {
         );
     }
 
-    private void saveKafkaEventPublishedAuditLog(
-            WorkflowRequestEntity workflowRequest,
-            WorkflowEvent workflowEvent,
-            int attemptNumber
-    ) {
-        auditLogService.writeAuditLog(
-                workflowRequest,
-                AuditEventType.KAFKA_EVENT_PUBLISHED,
-                "Published retry workflow event to Kafka",
-                toJson(new RetryKafkaEventPublishedMetadata(
-                        attemptNumber,
-                        workflowEvent.getEventType(),
-                        workflowEvent.getTimestamp().toString()
-                ))
-        );
-    }
-
     private String toJson(Object metadata) {
         try {
             return objectMapper.writeValueAsString(metadata);
@@ -165,6 +145,4 @@ public class RetryService {
     private record RetryRequestedMetadata(int attemptNumber, String previousFailureReason) {
     }
 
-    private record RetryKafkaEventPublishedMetadata(int attemptNumber, String eventType, String timestamp) {
-    }
 }

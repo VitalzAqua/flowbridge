@@ -3,10 +3,12 @@ package com.flowbridge.repository;
 import com.flowbridge.TestcontainersConfiguration;
 import com.flowbridge.entity.AuditLogEntity;
 import com.flowbridge.entity.ExternalSystemResponseEntity;
+import com.flowbridge.entity.OutboxEventEntity;
 import com.flowbridge.entity.RetryAttemptEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
 import com.flowbridge.enums.ExternalSystemStatus;
+import com.flowbridge.enums.OutboxEventStatus;
 import com.flowbridge.enums.RetryAttemptStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
@@ -40,6 +42,9 @@ class WorkflowFoundationRepositoryTest {
     private RetryAttemptRepository retryAttemptRepository;
 
     @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
+    @Autowired
     private TestEntityManager entityManager;
 
     @Test
@@ -49,6 +54,7 @@ class WorkflowFoundationRepositoryTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.RECEIVED);
         workflowRequest.setCorrelationId("test-correlation-001");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-001");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "C123",
@@ -78,6 +84,7 @@ class WorkflowFoundationRepositoryTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.RECEIVED);
         workflowRequest.setCorrelationId("test-correlation-003");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-003");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "C789",
@@ -107,6 +114,7 @@ class WorkflowFoundationRepositoryTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.RECEIVED);
         workflowRequest.setCorrelationId("test-correlation-002");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-002");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "C456",
@@ -146,6 +154,7 @@ class WorkflowFoundationRepositoryTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.FAILED);
         workflowRequest.setCorrelationId("test-correlation-004");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-004");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "FAIL-123"
@@ -179,6 +188,7 @@ class WorkflowFoundationRepositoryTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.COMPLETED);
         workflowRequest.setCorrelationId("test-correlation-005");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-005");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "C123"
@@ -206,5 +216,45 @@ class WorkflowFoundationRepositoryTest {
 
         assertThat(successResponseExists).isTrue();
         assertThat(failedResponseExists).isFalse();
+    }
+
+    @Test
+    void savesPendingOutboxEventForWorkflow() {
+        WorkflowRequestEntity workflowRequest = new WorkflowRequestEntity();
+        workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
+        workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
+        workflowRequest.setStatus(WorkflowStatus.MAPPED);
+        workflowRequest.setCorrelationId("test-correlation-006");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:test-correlation-006");
+        workflowRequest.setOriginalPayload("""
+                {
+                  "clientId": "C123"
+                }
+                """);
+        WorkflowRequestEntity savedWorkflow = workflowRequestRepository.saveAndFlush(workflowRequest);
+
+        OutboxEventEntity outboxEvent = new OutboxEventEntity();
+        outboxEvent.setWorkflowRequest(savedWorkflow);
+        outboxEvent.setEventType("ACCOUNT_OPENING_MAPPED");
+        outboxEvent.setIdempotencyKey(savedWorkflow.getIdempotencyKey());
+        outboxEvent.setPayload("""
+                {
+                  "workflowId": %d,
+                  "eventType": "ACCOUNT_OPENING_MAPPED",
+                  "idempotencyKey": "%s"
+                }
+                """.formatted(savedWorkflow.getId(), savedWorkflow.getIdempotencyKey()));
+        outboxEvent.setStatus(OutboxEventStatus.PENDING);
+
+        outboxEventRepository.saveAndFlush(outboxEvent);
+        entityManager.clear();
+
+        List<OutboxEventEntity> outboxEvents =
+                outboxEventRepository.findByWorkflowRequest_IdOrderByCreatedAtAsc(savedWorkflow.getId());
+
+        assertThat(outboxEvents).hasSize(1);
+        assertThat(outboxEvents.getFirst().getStatus()).isEqualTo(OutboxEventStatus.PENDING);
+        assertThat(outboxEvents.getFirst().getIdempotencyKey())
+                .isEqualTo("ACCOUNT_OPENING:test-correlation-006");
     }
 }

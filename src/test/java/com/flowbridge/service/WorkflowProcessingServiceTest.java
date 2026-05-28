@@ -67,7 +67,7 @@ class WorkflowProcessingServiceTest {
                 "Account created successfully"
         );
 
-        when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
         when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(mockCoreBankingService.openAccount(any())).thenReturn(coreBankingResponse);
@@ -120,7 +120,7 @@ class WorkflowProcessingServiceTest {
                 "Core banking rejected the account-opening request"
         );
 
-        when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
         when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(mockCoreBankingService.openAccount(any())).thenReturn(coreBankingResponse);
@@ -159,7 +159,7 @@ class WorkflowProcessingServiceTest {
                 """);
         workflowRequest.setStatus(WorkflowStatus.COMPLETED);
 
-        when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
 
         workflowProcessingService.processWorkflowEvent(accountOpeningMappedEvent());
 
@@ -173,19 +173,16 @@ class WorkflowProcessingServiceTest {
     }
 
     @Test
-    void skipsDuplicateEventWhenSuccessfulExternalResponseAlreadyExists() {
+    void skipsDuplicateEventForProcessingWorkflow() {
         WorkflowRequestEntity workflowRequest = mappedWorkflow("""
                 {
                   "customer_id": "C123",
                   "product_code": "SAV001"
                 }
                 """);
+        workflowRequest.setStatus(WorkflowStatus.PROCESSING);
 
-        when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
-        when(externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
-                10L,
-                ExternalSystemStatus.SUCCESS
-        )).thenReturn(true);
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
 
         workflowProcessingService.processWorkflowEvent(accountOpeningMappedEvent());
 
@@ -197,7 +194,96 @@ class WorkflowProcessingServiceTest {
         verify(auditLogRepository).save(auditLogCaptor.capture());
         assertThat(auditLogCaptor.getValue().getEventType()).isEqualTo(AuditEventType.DUPLICATE_EVENT_SKIPPED);
         assertThat(auditLogCaptor.getValue().getMessage())
-                .isEqualTo("Skipped duplicate Kafka event because workflow was already processed successfully");
+                .isEqualTo("Skipped duplicate or stale Kafka event");
+        assertThat(auditLogCaptor.getValue().getMetadata()).contains("PROCESSING");
+    }
+
+    @Test
+    void skipsEventWhenIdempotencyKeyDoesNotMatchWorkflow() {
+        WorkflowRequestEntity workflowRequest = mappedWorkflow("""
+                {
+                  "customer_id": "C123",
+                  "product_code": "SAV001"
+                }
+                """);
+
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
+
+        workflowProcessingService.processWorkflowEvent(new WorkflowEvent(
+                10L,
+                WorkflowType.ACCOUNT_OPENING,
+                WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
+                "corr-123",
+                "ACCOUNT_OPENING:different-correlation",
+                Instant.parse("2026-05-27T10:00:00Z")
+        ));
+
+        verify(workflowRequestRepository, never()).save(any(WorkflowRequestEntity.class));
+        verify(mockCoreBankingService, never()).openAccount(any());
+        verify(externalSystemResponseRepository, never()).save(any(ExternalSystemResponseEntity.class));
+
+        ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
+        verify(auditLogRepository).save(auditLogCaptor.capture());
+        assertThat(auditLogCaptor.getValue().getEventType()).isEqualTo(AuditEventType.DUPLICATE_EVENT_SKIPPED);
+        assertThat(auditLogCaptor.getValue().getMetadata()).contains("does not match");
+    }
+
+    @Test
+    void marksWorkflowFailedWhenMappedPayloadCannotBeRead() {
+        WorkflowRequestEntity workflowRequest = mappedWorkflow("{ not-valid-json");
+
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
+        when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        workflowProcessingService.processWorkflowEvent(accountOpeningMappedEvent());
+
+        assertThat(workflowRequest.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(workflowRequest.getFailureReason()).contains("Unexpected workflow processing failure");
+        verify(mockCoreBankingService, never()).openAccount(any());
+        verify(externalSystemResponseRepository, never()).save(any(ExternalSystemResponseEntity.class));
+
+        ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
+        verify(auditLogRepository, times(2)).save(auditLogCaptor.capture());
+        assertThat(auditLogCaptor.getAllValues())
+                .extracting(AuditLogEntity::getEventType)
+                .containsExactly(
+                        AuditEventType.PROCESSING_STARTED,
+                        AuditEventType.WORKFLOW_FAILED
+                );
+    }
+
+    @Test
+    void marksWorkflowFailedWhenCoreBankingThrowsUnexpectedException() {
+        WorkflowRequestEntity workflowRequest = mappedWorkflow("""
+                {
+                  "customer_id": "C123",
+                  "customer_name": "Alice Chen",
+                  "product_code": "SAV001",
+                  "advisor_id": "ADV001"
+                }
+                """);
+
+        when(workflowRequestRepository.findByIdForUpdate(10L)).thenReturn(Optional.of(workflowRequest));
+        when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(mockCoreBankingService.openAccount(any())).thenThrow(new RuntimeException("Core timeout"));
+
+        workflowProcessingService.processWorkflowEvent(accountOpeningMappedEvent());
+
+        assertThat(workflowRequest.getStatus()).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(workflowRequest.getFailureReason()).contains("Core timeout");
+        verify(externalSystemResponseRepository, never()).save(any(ExternalSystemResponseEntity.class));
+
+        ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
+        verify(auditLogRepository, times(3)).save(auditLogCaptor.capture());
+        assertThat(auditLogCaptor.getAllValues())
+                .extracting(AuditLogEntity::getEventType)
+                .containsExactly(
+                        AuditEventType.PROCESSING_STARTED,
+                        AuditEventType.EXTERNAL_SYSTEM_CALL_STARTED,
+                        AuditEventType.WORKFLOW_FAILED
+                );
     }
 
     @Test
@@ -207,12 +293,13 @@ class WorkflowProcessingServiceTest {
                 WorkflowType.ACCOUNT_OPENING,
                 "UNSUPPORTED_EVENT",
                 "corr-123",
+                "ACCOUNT_OPENING:corr-123",
                 Instant.parse("2026-05-27T10:00:00Z")
         );
 
         workflowProcessingService.processWorkflowEvent(unsupportedEvent);
 
-        verify(workflowRequestRepository, never()).findById(any());
+        verify(workflowRequestRepository, never()).findByIdForUpdate(any());
         verify(mockCoreBankingService, never()).openAccount(any());
     }
 
@@ -222,6 +309,7 @@ class WorkflowProcessingServiceTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.MAPPED);
         workflowRequest.setCorrelationId("corr-123");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:corr-123");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "C123"
@@ -237,6 +325,7 @@ class WorkflowProcessingServiceTest {
                 WorkflowType.ACCOUNT_OPENING,
                 WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
                 "corr-123",
+                "ACCOUNT_OPENING:corr-123",
                 Instant.parse("2026-05-27T10:00:00Z")
         );
     }
