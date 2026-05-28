@@ -1,6 +1,6 @@
 # FlowBridge Lite
 
-FlowBridge Lite is a Java 21 / Spring Boot backend that simulates the integration layer behind an enterprise banking workflow. It receives account-opening requests, validates and maps payloads, persists workflow state in PostgreSQL, publishes Kafka events, processes downstream work asynchronously, records audit logs, saves external system responses, and supports retry for failed workflows.
+FlowBridge Lite is a Java 21 / Spring Boot backend that simulates the integration layer behind an enterprise banking workflow. It receives account-opening requests, validates and maps payloads, persists workflow state in PostgreSQL, queues Kafka events through a transactional outbox, processes downstream work asynchronously, records audit logs, saves external system responses, and supports retry for failed workflows.
 
 The project is intentionally focused on backend workflow fundamentals rather than building a full banking platform.
 
@@ -9,7 +9,7 @@ The project is intentionally focused on backend workflow fundamentals rather tha
 - Java 21 and Spring Boot 3 for the backend application.
 - Spring Web for REST APIs.
 - Spring Data JPA and Hibernate for persistence.
-- PostgreSQL and JSONB for workflow, payload, audit, retry, and external response storage.
+- PostgreSQL and JSONB for workflow, payload, audit, outbox, retry, and external response storage.
 - Flyway for versioned database migrations.
 - Apache Kafka for asynchronous workflow processing.
 - Docker Compose for local PostgreSQL, Kafka, and app startup.
@@ -28,9 +28,9 @@ Validation + MappingService
   ↓
 PostgreSQL workflow_requests + audit_logs
   ↓
-WorkflowEventProducer
+outbox_events
   ↓
-Kafka topic: flowbridge.workflow.events
+OutboxEventPublisher → Kafka topic: flowbridge.workflow.events
   ↓
 WorkflowEventConsumer
   ↓
@@ -48,7 +48,7 @@ The app follows a layered structure:
 - Repositories handle database access.
 - DTOs represent API contracts and payloads.
 - Entities represent persisted database rows.
-- Kafka classes publish and consume workflow events.
+- Outbox and Kafka services publish and consume workflow events safely.
 
 ## Workflow Summary
 
@@ -76,7 +76,7 @@ or:
 FAILED -> RETRYING -> PROCESSING -> FAILED
 ```
 
-The Kafka consumer includes a basic idempotency guard: if a workflow is already `COMPLETED` or already has a successful external response, duplicate events are skipped and audited instead of calling the downstream mock service again.
+The workflow stores an internal `idempotencyKey` and includes it in Kafka events. The consumer locks the workflow row, verifies the event key, and only processes workflows in `MAPPED` or `RETRYING`; duplicate or stale events are skipped and audited.
 
 ## API Endpoints
 
@@ -204,6 +204,20 @@ Check audit logs:
 curl http://localhost:8080/api/workflows/<workflowId>/audit-logs
 ```
 
+Expected audit events include:
+
+```text
+REQUEST_RECEIVED
+VALIDATION_PASSED
+PAYLOAD_MAPPED
+KAFKA_EVENT_QUEUED
+KAFKA_EVENT_PUBLISHED
+PROCESSING_STARTED
+EXTERNAL_SYSTEM_CALL_STARTED
+EXTERNAL_SYSTEM_CALL_SUCCEEDED
+WORKFLOW_COMPLETED
+```
+
 Create a downstream failure:
 
 ```bash
@@ -224,12 +238,15 @@ Retry a failed workflow:
 curl -X POST http://localhost:8080/api/workflows/<workflowId>/retry
 ```
 
+The retry request moves the workflow to `RETRYING`, increments `retryCount`, records a retry attempt, queues a new outbox event, and lets the Kafka consumer process the mapped payload again.
+
 ## Database Tables
 
-- `workflow_requests`: stores workflow type, status, original payload, mapped payload, failure reason, retry count, correlation ID, and timestamps.
-- `audit_logs`: stores important workflow events such as request received, payload mapped, Kafka event published, processing started, workflow completed, and workflow failed.
+- `workflow_requests`: stores workflow type, status, original payload, mapped payload, failure reason, retry count, correlation ID, internal idempotency key, and timestamps.
+- `audit_logs`: stores important workflow events such as request received, payload mapped, Kafka event queued/published, processing started, workflow completed, and workflow failed.
 - `external_system_responses`: stores the response returned by the mock core banking system.
 - `retry_attempts`: stores retry attempt number, status, previous failure reason, and creation timestamp.
+- `outbox_events`: stores pending Kafka events in the same database transaction as workflow changes, then publishes them separately.
 
 All tables are created through Flyway migrations in:
 
@@ -258,9 +275,12 @@ The tests cover:
 - Payload mapping rules.
 - Workflow status transition validation.
 - Workflow creation and audit logging.
+- Internal idempotency key generation.
+- Outbox event creation and publishing.
 - Kafka event producer and consumer delegation.
 - Mock core banking success and failure behavior.
-- Retry service rules.
+- Retry service rules and retry outbox behavior.
+- Duplicate or stale Kafka event handling.
 - Repository persistence with PostgreSQL Testcontainers.
 - API integration through `MockMvc`.
 
@@ -277,21 +297,21 @@ This project demonstrates:
 - Audit logging for operational visibility.
 - Kafka producer/consumer async processing.
 - Downstream integration simulation.
-- Retry and basic idempotency patterns.
+- Retry, transactional outbox, and internal Kafka idempotency patterns.
 - Unit, repository, and integration testing.
 - Docker-based local development.
 
 ## Known Limitations
 
 - `MockCoreBankingService` is an in-app simulator, not a real external service.
-- Retry currently republishes the same mapped payload, so permanent business-rule failures will fail again.
-- Idempotency is implemented for Kafka consumer side effects, not as a full HTTP `Idempotency-Key` API.
+- Retry currently requeues the same mapped payload, so permanent business-rule failures will fail again.
+- Idempotency is implemented internally for workflow/Kafka processing, not as a full HTTP `Idempotency-Key` API.
 - Swagger/OpenAPI is intentionally not included because the core backend workflow is the focus.
 - There is no authentication, frontend, cloud deployment, Redis, Kubernetes, or multiple microservices.
 
 ## Future Improvements
 
-- Add an outbox table to make database commits and Kafka publishing more reliable.
+- Add richer outbox retry scheduling and operational visibility for failed outbox events.
 - Move mock core banking into a separate service and call it over HTTP.
 - Add full API idempotency using an `Idempotency-Key` header.
 - Add CI with GitHub Actions.
@@ -304,8 +324,8 @@ This project demonstrates:
 FlowBridge Lite — Banking Workflow Integration Simulator
 Java, Spring Boot, PostgreSQL, Kafka, Docker, JUnit, Mockito, Testcontainers, Flyway
 
-- Built a Spring Boot banking workflow simulator that processes account-opening requests through validation, payload mapping, asynchronous Kafka dispatch, mock downstream integration, retry handling, and audit logging.
-- Designed PostgreSQL/Flyway-backed workflow models for state tracking, JSONB payload storage, retry attempts, downstream responses, correlation IDs, and traceable audit events.
-- Implemented Kafka producer/consumer processing with workflow state transitions, idempotency checks, structured logging, and failure recovery for enterprise-style integration workflows.
-- Added JUnit/Mockito unit tests and Testcontainers integration tests to validate mapping logic, workflow transitions, persistence, retry behavior, and database-backed API flows.
+- Built a Spring Boot banking workflow simulator that processes account-opening requests through validation, payload mapping, transactional outbox dispatch, Kafka processing, mock downstream integration, retry handling, and audit logging.
+- Designed PostgreSQL/Flyway-backed workflow models for state tracking, JSONB payload storage, outbox events, retry attempts, downstream responses, correlation IDs, internal idempotency keys, and traceable audit events.
+- Implemented Kafka producer/consumer processing with workflow state transitions, idempotency checks, row locking, structured logging, and failure recovery for enterprise-style integration workflows.
+- Added JUnit/Mockito unit tests and Testcontainers integration tests to validate mapping logic, workflow transitions, outbox persistence, retry behavior, duplicate event handling, and database-backed API flows.
 ```

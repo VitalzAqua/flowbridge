@@ -60,28 +60,38 @@ public class WorkflowProcessingService {
             return;
         }
 
-        WorkflowRequestEntity workflowRequest = workflowRequestRepository.findById(event.getWorkflowId())
+        WorkflowRequestEntity workflowRequest = workflowRequestRepository.findByIdForUpdate(event.getWorkflowId())
                 .orElseThrow(() -> new WorkflowNotFoundException(event.getWorkflowId()));
 
-        if (workflowRequest.getStatus() == WorkflowStatus.COMPLETED) {
+        if (!workflowRequest.getIdempotencyKey().equals(event.getIdempotencyKey())) {
             log.info(
-                    "Skipping duplicate event {} for completed workflow {} with correlationId {}",
+                    "Skipping event {} for workflow {} because event idempotencyKey {} does not match workflow idempotencyKey {}",
                     event.getEventType(),
                     workflowRequest.getId(),
-                    workflowRequest.getCorrelationId()
+                    event.getIdempotencyKey(),
+                    workflowRequest.getIdempotencyKey()
             );
-            saveDuplicateEventSkippedAuditLog(workflowRequest, event);
+            saveDuplicateEventSkippedAuditLog(
+                    workflowRequest,
+                    event,
+                    "Event idempotency key does not match workflow idempotency key"
+            );
             return;
         }
 
-        if (hasSuccessfulExternalResponse(event.getWorkflowId())) {
+        if (!isProcessableStatus(workflowRequest.getStatus())) {
             log.info(
-                    "Skipping duplicate event {} for workflow {} with correlationId {} because a successful external response already exists",
+                    "Skipping duplicate or stale event {} for workflow {} with correlationId {} in status {}",
                     event.getEventType(),
                     workflowRequest.getId(),
-                    workflowRequest.getCorrelationId()
+                    workflowRequest.getCorrelationId(),
+                    workflowRequest.getStatus()
             );
-            saveDuplicateEventSkippedAuditLog(workflowRequest, event);
+            saveDuplicateEventSkippedAuditLog(
+                    workflowRequest,
+                    event,
+                    "Workflow status " + workflowRequest.getStatus() + " is not processable"
+            );
             return;
         }
 
@@ -89,18 +99,28 @@ public class WorkflowProcessingService {
         WorkflowRequestEntity processingWorkflow = workflowRequestRepository.save(workflowRequest);
         saveProcessingStartedAuditLog(processingWorkflow);
 
-        CoreBankingPayload mappedPayload = readMappedPayload(processingWorkflow);
-        saveExternalSystemCallStartedAuditLog(processingWorkflow);
+        try {
+            CoreBankingPayload mappedPayload = readMappedPayload(processingWorkflow);
+            saveExternalSystemCallStartedAuditLog(processingWorkflow);
 
-        CoreBankingResponse coreBankingResponse = mockCoreBankingService.openAccount(mappedPayload);
-        saveExternalSystemResponse(processingWorkflow, coreBankingResponse);
+            CoreBankingResponse coreBankingResponse = mockCoreBankingService.openAccount(mappedPayload);
+            saveExternalSystemResponse(processingWorkflow, coreBankingResponse);
 
-        if (coreBankingResponse.isSuccessful()) {
-            completeWorkflow(processingWorkflow, coreBankingResponse);
-            return;
+            if (coreBankingResponse.isSuccessful()) {
+                completeWorkflow(processingWorkflow, coreBankingResponse);
+                return;
+            }
+
+            failWorkflow(processingWorkflow, coreBankingResponse);
+        } catch (RuntimeException exception) {
+            log.error(
+                    "Workflow {} with correlationId {} failed during async processing",
+                    processingWorkflow.getId(),
+                    processingWorkflow.getCorrelationId(),
+                    exception
+            );
+            failWorkflowAfterUnexpectedException(processingWorkflow, exception);
         }
-
-        failWorkflow(processingWorkflow, coreBankingResponse);
     }
 
     private boolean isAccountOpeningMappedEvent(WorkflowEvent event) {
@@ -119,11 +139,8 @@ public class WorkflowProcessingService {
         }
     }
 
-    private boolean hasSuccessfulExternalResponse(Long workflowId) {
-        return externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
-                workflowId,
-                ExternalSystemStatus.SUCCESS
-        );
+    private boolean isProcessableStatus(WorkflowStatus status) {
+        return status == WorkflowStatus.MAPPED || status == WorkflowStatus.RETRYING;
     }
 
     private void completeWorkflow(WorkflowRequestEntity workflowRequest, CoreBankingResponse coreBankingResponse) {
@@ -139,6 +156,17 @@ public class WorkflowProcessingService {
         transitionWorkflow(workflowRequest, WorkflowStatus.FAILED);
         WorkflowRequestEntity failedWorkflow = workflowRequestRepository.save(workflowRequest);
         saveWorkflowFailedAuditLog(failedWorkflow, coreBankingResponse);
+    }
+
+    private void failWorkflowAfterUnexpectedException(
+            WorkflowRequestEntity workflowRequest,
+            RuntimeException exception
+    ) {
+        String failureReason = "Unexpected workflow processing failure: " + exception.getMessage();
+        workflowRequest.setFailureReason(failureReason);
+        transitionWorkflow(workflowRequest, WorkflowStatus.FAILED);
+        WorkflowRequestEntity failedWorkflow = workflowRequestRepository.save(workflowRequest);
+        saveWorkflowFailedAuditLog(failedWorkflow, failureReason);
     }
 
     private void saveExternalSystemResponse(
@@ -244,12 +272,33 @@ public class WorkflowProcessingService {
         );
     }
 
-    private void saveDuplicateEventSkippedAuditLog(WorkflowRequestEntity workflowRequest, WorkflowEvent event) {
+    private void saveWorkflowFailedAuditLog(
+            WorkflowRequestEntity workflowRequest,
+            String failureReason
+    ) {
+        auditLogService.writeAuditLog(
+                workflowRequest,
+                AuditEventType.WORKFLOW_FAILED,
+                "Workflow failed during async processing",
+                toJson(new WorkflowFinishedMetadata(null, failureReason))
+        );
+    }
+
+    private void saveDuplicateEventSkippedAuditLog(
+            WorkflowRequestEntity workflowRequest,
+            WorkflowEvent event,
+            String reason
+    ) {
         auditLogService.writeAuditLog(
                 workflowRequest,
                 AuditEventType.DUPLICATE_EVENT_SKIPPED,
-                "Skipped duplicate Kafka event because workflow was already processed successfully",
-                toJson(new DuplicateEventMetadata(event.getEventType(), event.getTimestamp().toString()))
+                "Skipped duplicate or stale Kafka event",
+                toJson(new DuplicateEventMetadata(
+                        event.getEventType(),
+                        event.getIdempotencyKey(),
+                        event.getTimestamp().toString(),
+                        reason
+                ))
         );
     }
 
@@ -272,6 +321,11 @@ public class WorkflowProcessingService {
     private record WorkflowFinishedMetadata(String externalReferenceId, String failureReason) {
     }
 
-    private record DuplicateEventMetadata(String eventType, String eventTimestamp) {
+    private record DuplicateEventMetadata(
+            String eventType,
+            String idempotencyKey,
+            String eventTimestamp,
+            String reason
+    ) {
     }
 }

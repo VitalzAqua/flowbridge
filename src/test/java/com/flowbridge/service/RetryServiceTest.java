@@ -3,23 +3,23 @@ package com.flowbridge.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flowbridge.dto.WorkflowResponse;
 import com.flowbridge.entity.AuditLogEntity;
+import com.flowbridge.entity.OutboxEventEntity;
 import com.flowbridge.entity.RetryAttemptEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
+import com.flowbridge.enums.OutboxEventStatus;
 import com.flowbridge.enums.RetryAttemptStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
 import com.flowbridge.exception.NonRetryableWorkflowException;
-import com.flowbridge.kafka.WorkflowEvent;
-import com.flowbridge.kafka.WorkflowEventProducer;
 import com.flowbridge.repository.AuditLogRepository;
+import com.flowbridge.repository.OutboxEventRepository;
 import com.flowbridge.repository.RetryAttemptRepository;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -37,37 +37,36 @@ class RetryServiceTest {
     private final WorkflowRequestRepository workflowRequestRepository = mock(WorkflowRequestRepository.class);
     private final RetryAttemptRepository retryAttemptRepository = mock(RetryAttemptRepository.class);
     private final AuditLogRepository auditLogRepository = mock(AuditLogRepository.class);
+    private final OutboxEventRepository outboxEventRepository = mock(OutboxEventRepository.class);
     private final AuditLogService auditLogService = new AuditLogService(auditLogRepository);
     private final WorkflowStatusTransitionValidator statusTransitionValidator = new WorkflowStatusTransitionValidator();
-    private final WorkflowEventProducer workflowEventProducer = mock(WorkflowEventProducer.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final OutboxEventService outboxEventService = new OutboxEventService(
+            outboxEventRepository,
+            auditLogService,
+            objectMapper
+    );
 
     private final RetryService retryService = new RetryService(
             workflowRequestRepository,
             retryAttemptRepository,
             auditLogService,
             statusTransitionValidator,
-            workflowEventProducer,
+            outboxEventService,
             objectMapper
     );
 
     @Test
-    void retriesFailedWorkflowAndRepublishesKafkaEvent() {
+    void retriesFailedWorkflowAndQueuesOutboxEvent() {
         WorkflowRequestEntity workflowRequest = failedMappedWorkflow(1);
-        WorkflowEvent workflowEvent = new WorkflowEvent(
-                10L,
-                WorkflowType.ACCOUNT_OPENING,
-                WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
-                "corr-123",
-                Instant.parse("2026-05-27T10:00:00Z")
-        );
 
         when(workflowRequestRepository.findById(10L)).thenReturn(Optional.of(workflowRequest));
         when(retryAttemptRepository.save(any(RetryAttemptEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(workflowEventProducer.publishAccountOpeningMappedEvent(workflowRequest)).thenReturn(workflowEvent);
+        when(outboxEventRepository.save(any(OutboxEventEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
         WorkflowResponse response = retryService.retryWorkflow(10L);
 
@@ -83,10 +82,14 @@ class RetryServiceTest {
         assertThat(savedRetryAttempts.getFirst().getAttemptNumber()).isEqualTo(2);
         assertThat(savedRetryAttempts.getFirst().getFailureReason())
                 .isEqualTo("Core banking rejected the account-opening request");
-        assertThat(savedRetryAttempts.getLast().getStatus()).isEqualTo(RetryAttemptStatus.EVENT_PUBLISHED);
+        assertThat(savedRetryAttempts.getLast().getStatus()).isEqualTo(RetryAttemptStatus.EVENT_QUEUED);
 
         verify(workflowRequestRepository).save(workflowRequest);
-        verify(workflowEventProducer).publishAccountOpeningMappedEvent(workflowRequest);
+        ArgumentCaptor<OutboxEventEntity> outboxEventCaptor = ArgumentCaptor.forClass(OutboxEventEntity.class);
+        verify(outboxEventRepository).save(outboxEventCaptor.capture());
+        assertThat(outboxEventCaptor.getValue().getWorkflowRequest()).isSameAs(workflowRequest);
+        assertThat(outboxEventCaptor.getValue().getIdempotencyKey()).isEqualTo("ACCOUNT_OPENING:corr-123");
+        assertThat(outboxEventCaptor.getValue().getStatus()).isEqualTo(OutboxEventStatus.PENDING);
 
         ArgumentCaptor<AuditLogEntity> auditLogCaptor = ArgumentCaptor.forClass(AuditLogEntity.class);
         verify(auditLogRepository, times(2)).save(auditLogCaptor.capture());
@@ -94,7 +97,7 @@ class RetryServiceTest {
                 .extracting(AuditLogEntity::getEventType)
                 .containsExactly(
                         AuditEventType.RETRY_REQUESTED,
-                        AuditEventType.KAFKA_EVENT_PUBLISHED
+                        AuditEventType.KAFKA_EVENT_QUEUED
                 );
         assertThat(auditLogCaptor.getAllValues().getFirst().getMetadata()).contains("attemptNumber");
 
@@ -116,7 +119,7 @@ class RetryServiceTest {
                 .hasMessageContaining("cannot be retried from status COMPLETED");
 
         verify(retryAttemptRepository, never()).save(any(RetryAttemptEntity.class));
-        verify(workflowEventProducer, never()).publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class));
+        verify(outboxEventRepository, never()).save(any(OutboxEventEntity.class));
     }
 
     @Test
@@ -130,7 +133,7 @@ class RetryServiceTest {
                 .hasMessageContaining("has reached max retry count 3");
 
         verify(retryAttemptRepository, never()).save(any(RetryAttemptEntity.class));
-        verify(workflowEventProducer, never()).publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class));
+        verify(outboxEventRepository, never()).save(any(OutboxEventEntity.class));
     }
 
     @Test
@@ -145,7 +148,7 @@ class RetryServiceTest {
                 .hasMessageContaining("no mapped payload exists to reprocess");
 
         verify(retryAttemptRepository, never()).save(any(RetryAttemptEntity.class));
-        verify(workflowEventProducer, never()).publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class));
+        verify(outboxEventRepository, never()).save(any(OutboxEventEntity.class));
     }
 
     private WorkflowRequestEntity failedMappedWorkflow(int retryCount) {
@@ -155,6 +158,7 @@ class RetryServiceTest {
         workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
         workflowRequest.setStatus(WorkflowStatus.FAILED);
         workflowRequest.setCorrelationId("corr-123");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:corr-123");
         workflowRequest.setOriginalPayload("""
                 {
                   "clientId": "FAIL-123"

@@ -34,11 +34,17 @@ public class WorkflowEventProducer {
                 workflowRequest.getWorkflowType(),
                 ACCOUNT_OPENING_MAPPED_EVENT,
                 workflowRequest.getCorrelationId(),
+                workflowRequest.getIdempotencyKey(),
                 Instant.now()
         );
 
+        publishEvent(event);
+        return event;
+    }
+
+    public void publishEvent(WorkflowEvent event) {
         try {
-            kafkaTemplate.send(workflowEventsTopic, workflowRequest.getCorrelationId(), event).join();
+            kafkaTemplate.send(workflowEventsTopic, event.getIdempotencyKey(), event).join();
         } catch (RuntimeException exception) {
             log.error(
                     "Failed to publish Kafka event {} for workflow {} with correlationId {} to topic {}",
@@ -58,7 +64,5 @@ public class WorkflowEventProducer {
                 event.getCorrelationId(),
                 workflowEventsTopic
         );
-
-        return event;
     }
 }

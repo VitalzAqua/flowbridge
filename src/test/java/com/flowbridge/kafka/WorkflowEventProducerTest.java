@@ -28,10 +28,11 @@ class WorkflowEventProducerTest {
         workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
         workflowRequest.setStatus(WorkflowStatus.MAPPED);
         workflowRequest.setCorrelationId("corr-123");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:corr-123");
 
         when(kafkaTemplate.send(
                 eq("flowbridge.workflow.events"),
-                eq("corr-123"),
+                eq("ACCOUNT_OPENING:corr-123"),
                 org.mockito.ArgumentMatchers.any(WorkflowEvent.class)
         )).thenReturn(CompletableFuture.completedFuture(null));
 
@@ -40,11 +41,12 @@ class WorkflowEventProducerTest {
         assertThat(event.getWorkflowType()).isEqualTo(WorkflowType.ACCOUNT_OPENING);
         assertThat(event.getEventType()).isEqualTo(WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT);
         assertThat(event.getCorrelationId()).isEqualTo("corr-123");
+        assertThat(event.getIdempotencyKey()).isEqualTo("ACCOUNT_OPENING:corr-123");
         assertThat(event.getTimestamp()).isNotNull();
 
         verify(kafkaTemplate).send(
                 eq("flowbridge.workflow.events"),
-                eq("corr-123"),
+                eq("ACCOUNT_OPENING:corr-123"),
                 eq(event)
         );
     }
@@ -55,10 +57,11 @@ class WorkflowEventProducerTest {
         workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
         workflowRequest.setStatus(WorkflowStatus.MAPPED);
         workflowRequest.setCorrelationId("corr-123");
+        workflowRequest.setIdempotencyKey("ACCOUNT_OPENING:corr-123");
 
         when(kafkaTemplate.send(
                 eq("flowbridge.workflow.events"),
-                eq("corr-123"),
+                eq("ACCOUNT_OPENING:corr-123"),
                 org.mockito.ArgumentMatchers.any(WorkflowEvent.class)
         )).thenReturn(CompletableFuture.failedFuture(new RuntimeException("Kafka unavailable")));
 

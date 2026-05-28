@@ -21,6 +21,7 @@ class WorkflowEventConsumerTest {
                 WorkflowType.ACCOUNT_OPENING,
                 WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
                 "corr-123",
+                "ACCOUNT_OPENING:corr-123",
                 Instant.parse("2026-05-27T10:00:00Z")
         );
 

@@ -12,8 +12,6 @@ import com.flowbridge.enums.AuditEventType;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
 import com.flowbridge.exception.WorkflowNotFoundException;
-import com.flowbridge.kafka.WorkflowEvent;
-import com.flowbridge.kafka.WorkflowEventProducer;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +36,7 @@ public class WorkflowService {
     private final CorrelationIdService correlationIdService;
     private final MappingService mappingService;
     private final WorkflowStatusTransitionValidator statusTransitionValidator;
-    private final WorkflowEventProducer workflowEventProducer;
+    private final OutboxEventService outboxEventService;
     private final ObjectMapper objectMapper;
 
     public WorkflowService(
@@ -47,7 +45,7 @@ public class WorkflowService {
             CorrelationIdService correlationIdService,
             MappingService mappingService,
             WorkflowStatusTransitionValidator statusTransitionValidator,
-            WorkflowEventProducer workflowEventProducer,
+            OutboxEventService outboxEventService,
             ObjectMapper objectMapper
     ) {
         this.workflowRequestRepository = workflowRequestRepository;
@@ -55,7 +53,7 @@ public class WorkflowService {
         this.correlationIdService = correlationIdService;
         this.mappingService = mappingService;
         this.statusTransitionValidator = statusTransitionValidator;
-        this.workflowEventProducer = workflowEventProducer;
+        this.outboxEventService = outboxEventService;
         this.objectMapper = objectMapper;
     }
 
@@ -74,6 +72,7 @@ public class WorkflowService {
         workflowRequest.setSourceSystem(DIGITAL_CHANNEL_SOURCE_SYSTEM);
         workflowRequest.setStatus(WorkflowStatus.RECEIVED);
         workflowRequest.setCorrelationId(correlationId);
+        workflowRequest.setIdempotencyKey(toInternalIdempotencyKey(WorkflowType.ACCOUNT_OPENING, correlationId));
         workflowRequest.setOriginalPayload(toJson(request));
 
         WorkflowRequestEntity savedWorkflow = workflowRequestRepository.save(workflowRequest);
@@ -96,8 +95,7 @@ public class WorkflowService {
             transitionWorkflow(validatedWorkflow, WorkflowStatus.MAPPED);
             WorkflowRequestEntity mappedWorkflow = workflowRequestRepository.save(validatedWorkflow);
             savePayloadMappedAuditLog(mappedWorkflow, request, coreBankingPayload);
-            WorkflowEvent workflowEvent = workflowEventProducer.publishAccountOpeningMappedEvent(mappedWorkflow);
-            saveKafkaEventPublishedAuditLog(mappedWorkflow, workflowEvent);
+            outboxEventService.queueAccountOpeningMappedEvent(mappedWorkflow);
 
             return new WorkflowResponse(
                     mappedWorkflow.getId(),
@@ -188,18 +186,6 @@ public class WorkflowService {
         );
     }
 
-    private void saveKafkaEventPublishedAuditLog(WorkflowRequestEntity workflowRequest, WorkflowEvent workflowEvent) {
-        auditLogService.writeAuditLog(
-                workflowRequest,
-                AuditEventType.KAFKA_EVENT_PUBLISHED,
-                "Published account-opening mapped event to Kafka",
-                toJson(new KafkaEventPublishedMetadata(
-                        workflowEvent.getEventType(),
-                        workflowEvent.getTimestamp().toString()
-                ))
-        );
-    }
-
     private void saveValidationFailedAuditLog(WorkflowRequestEntity workflowRequest, String failureReason) {
         auditLogService.writeAuditLog(
                 workflowRequest,
@@ -239,6 +225,10 @@ public class WorkflowService {
                 nextStatus
         );
         workflowRequest.setStatus(nextStatus);
+    }
+
+    private String toInternalIdempotencyKey(WorkflowType workflowType, String correlationId) {
+        return workflowType.name() + ":" + correlationId;
     }
 
     private WorkflowDetailResponse toWorkflowDetailResponse(WorkflowRequestEntity workflowRequest) {
@@ -290,20 +280,10 @@ public class WorkflowService {
         }
     }
 
-    private String toJson(KafkaEventPublishedMetadata metadata) {
-        try {
-            return objectMapper.writeValueAsString(metadata);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Failed to serialize Kafka event metadata", exception);
-        }
-    }
-
     private record ValidationFailureMetadata(String failureReason) {
     }
 
     private record PayloadMappedMetadata(String sourceAccountType, String targetProductCode) {
     }
 
-    private record KafkaEventPublishedMetadata(String eventType, String timestamp) {
-    }
 }

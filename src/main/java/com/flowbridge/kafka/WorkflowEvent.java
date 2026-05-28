@@ -14,6 +14,7 @@ public class WorkflowEvent {
     private final WorkflowType workflowType;
     private final String eventType;
     private final String correlationId;
+    private final String idempotencyKey;
     private final Instant timestamp;
 
     @JsonCreator
@@ -22,12 +23,14 @@ public class WorkflowEvent {
             @JsonProperty("workflowType") WorkflowType workflowType,
             @JsonProperty("eventType") String eventType,
             @JsonProperty("correlationId") String correlationId,
+            @JsonProperty("idempotencyKey") String idempotencyKey,
             @JsonProperty("timestamp") Instant timestamp
     ) {
         this.workflowId = workflowId;
         this.workflowType = workflowType;
         this.eventType = eventType;
         this.correlationId = correlationId;
+        this.idempotencyKey = idempotencyKey;
         this.timestamp = timestamp;
     }
 }

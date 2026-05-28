@@ -6,20 +6,20 @@ import com.flowbridge.dto.AuditLogResponse;
 import com.flowbridge.dto.WorkflowDetailResponse;
 import com.flowbridge.dto.WorkflowResponse;
 import com.flowbridge.entity.AuditLogEntity;
+import com.flowbridge.entity.OutboxEventEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AccountType;
 import com.flowbridge.enums.AuditEventType;
+import com.flowbridge.enums.OutboxEventStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
-import com.flowbridge.kafka.WorkflowEvent;
-import com.flowbridge.kafka.WorkflowEventProducer;
 import com.flowbridge.repository.AuditLogRepository;
+import com.flowbridge.repository.OutboxEventRepository;
 import com.flowbridge.repository.WorkflowRequestRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDate;
-import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -36,12 +36,17 @@ class WorkflowServiceTest {
 
     private final WorkflowRequestRepository workflowRequestRepository = mock(WorkflowRequestRepository.class);
     private final AuditLogRepository auditLogRepository = mock(AuditLogRepository.class);
+    private final OutboxEventRepository outboxEventRepository = mock(OutboxEventRepository.class);
     private final AuditLogService auditLogService = new AuditLogService(auditLogRepository);
     private final CorrelationIdService correlationIdService = mock(CorrelationIdService.class);
     private final MappingService mappingService = new MappingService();
     private final WorkflowStatusTransitionValidator statusTransitionValidator = new WorkflowStatusTransitionValidator();
-    private final WorkflowEventProducer workflowEventProducer = mock(WorkflowEventProducer.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final OutboxEventService outboxEventService = new OutboxEventService(
+            outboxEventRepository,
+            auditLogService,
+            objectMapper
+    );
 
     private final WorkflowService workflowService = new WorkflowService(
             workflowRequestRepository,
@@ -49,7 +54,7 @@ class WorkflowServiceTest {
             correlationIdService,
             mappingService,
             statusTransitionValidator,
-            workflowEventProducer,
+            outboxEventService,
             objectMapper
     );
 
@@ -65,14 +70,8 @@ class WorkflowServiceTest {
         when(correlationIdService.generateCorrelationId()).thenReturn("corr-123");
         when(workflowRequestRepository.save(any(WorkflowRequestEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(workflowEventProducer.publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class)))
-                .thenReturn(new WorkflowEvent(
-                        1L,
-                        WorkflowType.ACCOUNT_OPENING,
-                        WorkflowEventProducer.ACCOUNT_OPENING_MAPPED_EVENT,
-                        "corr-123",
-                        Instant.parse("2026-05-26T10:00:00Z")
-                ));
+        when(outboxEventRepository.save(any(OutboxEventEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
         WorkflowResponse response = workflowService.createAccountOpeningWorkflow(request);
 
@@ -86,6 +85,7 @@ class WorkflowServiceTest {
         assertThat(receivedWorkflow.getWorkflowType()).isEqualTo(WorkflowType.ACCOUNT_OPENING);
         assertThat(receivedWorkflow.getSourceSystem()).isEqualTo("DIGITAL_CHANNEL");
         assertThat(receivedWorkflow.getCorrelationId()).isEqualTo("corr-123");
+        assertThat(receivedWorkflow.getIdempotencyKey()).isEqualTo("ACCOUNT_OPENING:corr-123");
         assertThat(receivedWorkflow.getOriginalPayload()).contains("Alice Chen");
         assertThat(receivedWorkflow.getOriginalPayload()).contains("SAVINGS");
         assertThat(mappedWorkflow.getStatus()).isEqualTo(WorkflowStatus.MAPPED);
@@ -114,11 +114,16 @@ class WorkflowServiceTest {
         assertThat(savedAuditLogs.get(2).getMetadata()).contains("SAV001");
         assertThat(savedAuditLogs.getLast().getWorkflowRequest()).isSameAs(mappedWorkflow);
         assertThat(savedAuditLogs.getLast().getCorrelationId()).isEqualTo("corr-123");
-        assertThat(savedAuditLogs.getLast().getEventType()).isEqualTo(AuditEventType.KAFKA_EVENT_PUBLISHED);
-        assertThat(savedAuditLogs.getLast().getMessage()).isEqualTo("Published account-opening mapped event to Kafka");
+        assertThat(savedAuditLogs.getLast().getEventType()).isEqualTo(AuditEventType.KAFKA_EVENT_QUEUED);
+        assertThat(savedAuditLogs.getLast().getMessage()).isEqualTo("Queued account-opening mapped event in outbox");
         assertThat(savedAuditLogs.getLast().getMetadata()).contains("ACCOUNT_OPENING_MAPPED");
 
-        verify(workflowEventProducer).publishAccountOpeningMappedEvent(mappedWorkflow);
+        ArgumentCaptor<OutboxEventEntity> outboxEventCaptor = ArgumentCaptor.forClass(OutboxEventEntity.class);
+        verify(outboxEventRepository).save(outboxEventCaptor.capture());
+        assertThat(outboxEventCaptor.getValue().getWorkflowRequest()).isSameAs(mappedWorkflow);
+        assertThat(outboxEventCaptor.getValue().getIdempotencyKey()).isEqualTo("ACCOUNT_OPENING:corr-123");
+        assertThat(outboxEventCaptor.getValue().getStatus()).isEqualTo(OutboxEventStatus.PENDING);
+        assertThat(outboxEventCaptor.getValue().getPayload()).contains("ACCOUNT_OPENING_MAPPED");
 
         assertThat(response.getWorkflowType()).isEqualTo(WorkflowType.ACCOUNT_OPENING);
         assertThat(response.getStatus()).isEqualTo(WorkflowStatus.MAPPED);
@@ -161,7 +166,7 @@ class WorkflowServiceTest {
         assertThat(response.getStatus()).isEqualTo(WorkflowStatus.FAILED);
         assertThat(response.getCorrelationId()).isEqualTo("corr-456");
         assertThat(response.getMessage()).isEqualTo("Account opening workflow failed validation");
-        verify(workflowEventProducer, never()).publishAccountOpeningMappedEvent(any(WorkflowRequestEntity.class));
+        verify(outboxEventRepository, never()).save(any(OutboxEventEntity.class));
     }
 
     @Test
