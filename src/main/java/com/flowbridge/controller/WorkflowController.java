@@ -4,6 +4,7 @@ import com.flowbridge.dto.AccountOpeningRequest;
 import com.flowbridge.dto.AuditLogResponse;
 import com.flowbridge.dto.WorkflowDetailResponse;
 import com.flowbridge.dto.WorkflowResponse;
+import com.flowbridge.service.RetryService;
 import com.flowbridge.service.WorkflowService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -22,9 +23,11 @@ import java.util.List;
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    private final RetryService retryService;
 
-    public WorkflowController(WorkflowService workflowService) {
+    public WorkflowController(WorkflowService workflowService, RetryService retryService) {
         this.workflowService = workflowService;
+        this.retryService = retryService;
     }
 
     @PostMapping("/account-opening")
@@ -45,5 +48,11 @@ public class WorkflowController {
     public ResponseEntity<List<AuditLogResponse>> getAuditLogs(@PathVariable Long workflowId) {
         List<AuditLogResponse> response = workflowService.getAuditLogs(workflowId);
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{workflowId}/retry")
+    public ResponseEntity<WorkflowResponse> retryWorkflow(@PathVariable Long workflowId) {
+        WorkflowResponse response = retryService.retryWorkflow(workflowId);
+        return ResponseEntity.accepted().body(response);
     }
 }

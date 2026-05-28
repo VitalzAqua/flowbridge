@@ -44,6 +44,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
+    @ExceptionHandler(NonRetryableWorkflowException.class)
+    public ResponseEntity<ErrorResponse> handleNonRetryableWorkflow(
+            NonRetryableWorkflowException exception,
+            HttpServletRequest request
+    ) {
+        ErrorResponse response = new ErrorResponse(
+                LocalDateTime.now(),
+                HttpStatus.CONFLICT.value(),
+                "Workflow cannot be retried",
+                exception.getMessage(),
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+    }
+
     @ExceptionHandler(WorkflowNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleWorkflowNotFound(
             WorkflowNotFoundException exception,
