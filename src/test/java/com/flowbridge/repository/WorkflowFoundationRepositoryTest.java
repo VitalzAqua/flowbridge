@@ -2,8 +2,10 @@ package com.flowbridge.repository;
 
 import com.flowbridge.TestcontainersConfiguration;
 import com.flowbridge.entity.AuditLogEntity;
+import com.flowbridge.entity.RetryAttemptEntity;
 import com.flowbridge.entity.WorkflowRequestEntity;
 import com.flowbridge.enums.AuditEventType;
+import com.flowbridge.enums.RetryAttemptStatus;
 import com.flowbridge.enums.WorkflowStatus;
 import com.flowbridge.enums.WorkflowType;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,9 @@ class WorkflowFoundationRepositoryTest {
 
     @Autowired
     private AuditLogRepository auditLogRepository;
+
+    @Autowired
+    private RetryAttemptRepository retryAttemptRepository;
 
     @Autowired
     private TestEntityManager entityManager;
@@ -127,5 +132,38 @@ class WorkflowFoundationRepositoryTest {
         assertThat(auditLogs.getFirst().getCorrelationId()).isEqualTo("test-correlation-002");
         assertThat(auditLogs.getFirst().getMetadata()).contains("DIGITAL_CHANNEL");
         assertThat(auditLogs.getFirst().getCreatedAt()).isNotNull();
+    }
+
+    @Test
+    void savesRetryAttemptForFailedWorkflow() {
+        WorkflowRequestEntity workflowRequest = new WorkflowRequestEntity();
+        workflowRequest.setWorkflowType(WorkflowType.ACCOUNT_OPENING);
+        workflowRequest.setSourceSystem("DIGITAL_CHANNEL");
+        workflowRequest.setStatus(WorkflowStatus.FAILED);
+        workflowRequest.setCorrelationId("test-correlation-004");
+        workflowRequest.setOriginalPayload("""
+                {
+                  "clientId": "FAIL-123"
+                }
+                """);
+        WorkflowRequestEntity savedWorkflow = workflowRequestRepository.saveAndFlush(workflowRequest);
+
+        RetryAttemptEntity retryAttempt = new RetryAttemptEntity();
+        retryAttempt.setWorkflowRequest(savedWorkflow);
+        retryAttempt.setAttemptNumber(1);
+        retryAttempt.setStatus(RetryAttemptStatus.REQUESTED);
+        retryAttempt.setFailureReason("Core banking rejected the request");
+
+        retryAttemptRepository.saveAndFlush(retryAttempt);
+        entityManager.clear();
+
+        List<RetryAttemptEntity> retryAttempts =
+                retryAttemptRepository.findByWorkflowRequest_IdOrderByAttemptNumberAsc(savedWorkflow.getId());
+
+        assertThat(retryAttempts).hasSize(1);
+        assertThat(retryAttempts.getFirst().getAttemptNumber()).isEqualTo(1);
+        assertThat(retryAttempts.getFirst().getStatus()).isEqualTo(RetryAttemptStatus.REQUESTED);
+        assertThat(retryAttempts.getFirst().getFailureReason()).contains("Core banking rejected");
+        assertThat(retryAttempts.getFirst().getCreatedAt()).isNotNull();
     }
 }
