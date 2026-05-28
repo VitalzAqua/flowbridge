@@ -74,6 +74,17 @@ public class WorkflowProcessingService {
             return;
         }
 
+        if (hasSuccessfulExternalResponse(event.getWorkflowId())) {
+            log.info(
+                    "Skipping duplicate event {} for workflow {} with correlationId {} because a successful external response already exists",
+                    event.getEventType(),
+                    workflowRequest.getId(),
+                    workflowRequest.getCorrelationId()
+            );
+            saveDuplicateEventSkippedAuditLog(workflowRequest, event);
+            return;
+        }
+
         transitionWorkflow(workflowRequest, WorkflowStatus.PROCESSING);
         WorkflowRequestEntity processingWorkflow = workflowRequestRepository.save(workflowRequest);
         saveProcessingStartedAuditLog(processingWorkflow);
@@ -106,6 +117,13 @@ public class WorkflowProcessingService {
                     exception
             );
         }
+    }
+
+    private boolean hasSuccessfulExternalResponse(Long workflowId) {
+        return externalSystemResponseRepository.existsByWorkflowRequest_IdAndStatus(
+                workflowId,
+                ExternalSystemStatus.SUCCESS
+        );
     }
 
     private void completeWorkflow(WorkflowRequestEntity workflowRequest, CoreBankingResponse coreBankingResponse) {
@@ -230,7 +248,7 @@ public class WorkflowProcessingService {
         auditLogService.writeAuditLog(
                 workflowRequest,
                 AuditEventType.DUPLICATE_EVENT_SKIPPED,
-                "Skipped duplicate Kafka event for already completed workflow",
+                "Skipped duplicate Kafka event because workflow was already processed successfully",
                 toJson(new DuplicateEventMetadata(event.getEventType(), event.getTimestamp().toString()))
         );
     }
