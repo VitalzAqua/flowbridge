@@ -74,6 +74,13 @@ class AccountOpeningWorkflowIntegrationTest {
     }
 
     @Test
+    void actuatorHealthEndpointIsAvailableForDeploymentHealthChecks() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
     void accountOpeningRequestCreatesMappedWorkflowAndAuditLogs() throws Exception {
         MvcResult createResult = mockMvc.perform(post("/api/workflows/account-opening")
                         .contentType(MediaType.APPLICATION_JSON)
