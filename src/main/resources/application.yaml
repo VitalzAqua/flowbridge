@@ -1,3 +1,6 @@
+server:
+  port: ${SERVER_PORT:8080}
+
 spring:
   application:
     name: flowbridge
@@ -5,9 +8,9 @@ spring:
     serialization:
       write-dates-as-timestamps: false
   datasource:
-    url: jdbc:postgresql://localhost:5433/flowbridge
-    username: flowbridge
-    password: flowbridge
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/flowbridge}
+    username: ${SPRING_DATASOURCE_USERNAME:flowbridge}
+    password: ${SPRING_DATASOURCE_PASSWORD:flowbridge}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -19,9 +22,9 @@ spring:
     enabled: true
     locations: classpath:db/migration
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
-      group-id: flowbridge-workflow-consumer
+      group-id: ${FLOWBRIDGE_KAFKA_CONSUMER_GROUP_ID:flowbridge-workflow-consumer}
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
@@ -35,5 +38,43 @@ spring:
 
 flowbridge:
   kafka:
-    workflow-events-topic: flowbridge.workflow.events
-    consumer-group-id: flowbridge-workflow-consumer
+    workflow-events-topic: ${FLOWBRIDGE_KAFKA_WORKFLOW_EVENTS_TOPIC:flowbridge.workflow.events}
+    consumer-group-id: ${FLOWBRIDGE_KAFKA_CONSUMER_GROUP_ID:flowbridge-workflow-consumer}
+  outbox:
+    publisher:
+      enabled: ${FLOWBRIDGE_OUTBOX_PUBLISHER_ENABLED:true}
+      fixed-delay-ms: ${FLOWBRIDGE_OUTBOX_PUBLISHER_FIXED_DELAY_MS:5000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+---
+spring:
+  config:
+    activate:
+      on-profile: aws
+  docker:
+    compose:
+      enabled: false
+  jpa:
+    properties:
+      hibernate:
+        format_sql: false
+
+logging:
+  level:
+    root: INFO
+    org.hibernate.SQL: WARN

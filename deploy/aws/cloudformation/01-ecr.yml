@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: FlowBridge Lite ECR repository for the Spring Boot Docker image.
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: flowbridge
+    Description: Name of the ECR repository that stores the FlowBridge Docker image.
+
+Resources:
+  FlowBridgeRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the latest 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+Outputs:
+  RepositoryName:
+    Description: ECR repository name.
+    Value: !Ref FlowBridgeRepository
+  RepositoryUri:
+    Description: ECR repository URI used by docker push and ECS task definitions.
+    Value: !GetAtt FlowBridgeRepository.RepositoryUri

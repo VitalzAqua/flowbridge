@@ -13,6 +13,7 @@ The project is intentionally focused on backend workflow fundamentals rather tha
 - Flyway for versioned database migrations.
 - Apache Kafka for asynchronous workflow processing.
 - Docker Compose for local PostgreSQL, Kafka, and app startup.
+- Spring Boot Actuator for deployment health checks.
 - JUnit 5, Mockito, Spring Boot Test, and Testcontainers for testing.
 
 ## Architecture
@@ -132,6 +133,12 @@ The app runs at:
 http://localhost:8080
 ```
 
+Health check endpoint:
+
+```text
+http://localhost:8080/actuator/health
+```
+
 PostgreSQL is exposed locally on:
 
 ```text
@@ -168,6 +175,70 @@ Then run:
 
 ```bash
 ./mvnw spring-boot:run
+```
+
+## AWS Deployment Target
+
+The recommended AWS deployment path is intentionally practical:
+
+```text
+Internet
+  ↓
+Application Load Balancer
+  ↓
+ECS Fargate service running the FlowBridge Docker image
+  ↓
+RDS PostgreSQL
+
+ECS Fargate task
+  ↓
+Kafka running in Docker on a small EC2 instance
+
+ECS task logs
+  ↓
+CloudWatch Logs
+```
+
+Use ECS Fargate for the Spring Boot app because FlowBridge is already packaged as a container. Fargate lets AWS run the container without requiring you to patch or administer an application EC2 instance. That keeps the project focused on backend deployment architecture: container image, task definition, health checks, environment variables, IAM roles, service networking, logs, and managed database access.
+
+The app has an `aws` Spring profile for ECS:
+
+```bash
+SPRING_PROFILES_ACTIVE=aws
+SPRING_DATASOURCE_URL=jdbc:postgresql://<rds-endpoint>:5432/flowbridge
+SPRING_DATASOURCE_USERNAME=<database-user>
+SPRING_DATASOURCE_PASSWORD=<database-password>
+SPRING_KAFKA_BOOTSTRAP_SERVERS=<kafka-ec2-private-dns>:9092
+```
+
+Optional deployment variables:
+
+```bash
+SERVER_PORT=8080
+FLOWBRIDGE_KAFKA_WORKFLOW_EVENTS_TOPIC=flowbridge.workflow.events
+FLOWBRIDGE_KAFKA_CONSUMER_GROUP_ID=flowbridge-workflow-consumer
+FLOWBRIDGE_OUTBOX_PUBLISHER_ENABLED=true
+FLOWBRIDGE_OUTBOX_PUBLISHER_FIXED_DELAY_MS=5000
+```
+
+For ECS and the Application Load Balancer, configure the target group health check path as:
+
+```text
+/actuator/health
+```
+
+The Docker image also includes a container-level health check that calls the same endpoint. In AWS, the database password should be passed through SSM Parameter Store or Secrets Manager rather than hard-coded in the task definition.
+
+AWS deployment files live in:
+
+```text
+deploy/aws
+```
+
+Start with:
+
+```text
+deploy/aws/README.md
 ```
 
 ## API Smoke Test
@@ -300,6 +371,7 @@ This project demonstrates:
 - Retry, transactional outbox, and internal Kafka idempotency patterns.
 - Unit, repository, and integration testing.
 - Docker-based local development.
+- AWS-ready health checks and environment-based runtime configuration.
 
 ## Known Limitations
 
@@ -307,7 +379,7 @@ This project demonstrates:
 - Retry currently requeues the same mapped payload, so permanent business-rule failures will fail again.
 - Idempotency is implemented internally for workflow/Kafka processing, not as a full HTTP `Idempotency-Key` API.
 - Swagger/OpenAPI is intentionally not included because the core backend workflow is the focus.
-- There is no authentication, frontend, cloud deployment, Redis, Kubernetes, or multiple microservices.
+- There is no authentication, frontend, completed cloud deployment, Redis, Kubernetes, or multiple microservices.
 
 ## Future Improvements
 
@@ -315,5 +387,6 @@ This project demonstrates:
 - Move mock core banking into a separate service and call it over HTTP.
 - Add full API idempotency using an `Idempotency-Key` header.
 - Add CI with GitHub Actions.
+- Deploy the containerized Spring Boot app to ECS Fargate with RDS PostgreSQL, CloudWatch Logs, IAM roles, and EC2-hosted Kafka.
 - Add Swagger/OpenAPI later if API documentation becomes a priority.
 - Add security only after the backend workflow is complete.
