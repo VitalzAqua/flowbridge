@@ -379,7 +379,7 @@ This project demonstrates:
 - Retry currently requeues the same mapped payload, so permanent business-rule failures will fail again.
 - Idempotency is implemented internally for workflow/Kafka processing, not as a full HTTP `Idempotency-Key` API.
 - Swagger/OpenAPI is intentionally not included because the core backend workflow is the focus.
-- There is no authentication, frontend, completed cloud deployment, Redis, Kubernetes, or multiple microservices.
+- There is no authentication, frontend, complete cloud deployment, Redis, Kubernetes, or multiple microservices.
 
 ## Future Improvements
 
